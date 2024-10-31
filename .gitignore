@@ -1,6 +1,13 @@
 # Deploy Assets
 release
 
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
