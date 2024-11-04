@@ -1,0 +1,79 @@
+name: Luxor - (gha) Publish Helm Charts
+
+on:
+  workflow_dispatch:
+    inputs:
+      push_to_registries:
+        description: 'Push images to registries'
+        required: true
+        type: boolean
+        default: false
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+env:
+  CI_GCP_PROJECT_ID: ${{ secrets.CI_GCP_PROJECT_ID }}
+  CI_GCP_SERVICE_ACCOUNT: ${{ secrets.CI_GCP_SERVICE_ACCOUNT }}
+  CI_GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.CI_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  CI_GCP_REPOSITORY: actions-runner-controller
+
+permissions:
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  build-push-image:
+    name: Build and push controller image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # If inputs.ref is empty, it'll resolve to the default branch
+          ref: ${{ inputs.ref }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # Pinning v0.9.1 for Buildx and BuildKit v0.10.6
+          # BuildKit v0.11 which has a bug causing intermittent
+          # failures pushing images to GHCR
+          version: v0.9.1
+          driver-opts: image=moby/buildkit:v0.10.6
+
+      - id: "auth"
+        name: Authenticate to GCP
+        uses: "google-github-actions/auth@v2"
+        with:
+          token_format: "access_token"
+          workload_identity_provider: ${{ env.CI_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.CI_GCP_SERVICE_ACCOUNT }}
+
+      - name: Login to GCR
+        uses: docker/login-action@v3
+        with:
+          registry: gcr.io
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Set env
+        run: |
+          echo "TAG=$(echo $GITHUB_SHA | cut -c 1-7)-$(date +%s)" >> $GITHUB_ENV;
+
+      - name: Build & push controller image
+        uses: docker/build-push-action@v5
+        with:
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ inputs.release_tag_name }}
+          push: ${{ inputs.push_to_registries }}
+          tags: gcr.io/${{ env.CI_GCP_PROJECT_ID }}/${{ env.CI_GCP_REPOSITORY }}/gha-runner-scale-set-controller:${{ env.TAG }}
+          cache-from: type=registry,ref=gcr.io/${{ env.CI_GCP_PROJECT_ID }}/${{ env.CI_GCP_REPOSITORY }}/gha-runner-scale-set-controller::buildcache
+          cache-to: type=registry,ref=gcr.io/${{ env.CI_GCP_PROJECT_ID }}/${{ env.CI_GCP_REPOSITORY }}/gha-runner-scale-set-controller::buildcache,mode=max
+
